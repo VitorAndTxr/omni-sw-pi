@@ -1,0 +1,6 @@
+{
+  "ignore": [
+    "skills/**/scripts/**",
+    "node_modules/**"
+  ]
+}

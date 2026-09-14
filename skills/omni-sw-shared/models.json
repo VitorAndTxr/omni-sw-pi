@@ -1,0 +1,6 @@
+{
+  "_comment": "Map abstract model tiers to concrete pi model ids (provider/model[:thinking]). A null or absent tier means: omit the per-spawn model override and let the agent inherit the session/default model. Example: {\"opus\": \"anthropic/claude-opus-4\", \"sonnet\": \"anthropic/claude-sonnet-4\", \"haiku\": \"anthropic/claude-haiku-4\"}",
+  "opus": null,
+  "sonnet": null,
+  "haiku": null
+}

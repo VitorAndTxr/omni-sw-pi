@@ -1,0 +1,63 @@
+{
+  "name": "pi-omni-sw",
+  "version": "0.1.0",
+  "description": "TDD-oriented multi-agent SDLC agency for pi: PM, PO, TL, Dev and QA skills + subagents, driven by a deterministic Python CLI.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "omni-sw",
+    "sdlc",
+    "tdd",
+    "atdd",
+    "agents",
+    "multi-agent",
+    "agency"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "extensions/",
+    "skills/",
+    "agents/",
+    "docs/",
+    "scripts/",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "python scripts/verify.py",
+    "verify": "python scripts/verify.py",
+    "cli:help": "python skills/omni-sw-shared/scripts/agency_cli.py --help"
+  }
+}

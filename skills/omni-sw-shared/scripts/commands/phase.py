@@ -1,0 +1,509 @@
+"""
+agency_cli phase -- Phase state machine for SDLC orchestration.
+
+Usage:
+    agency_cli phase sequence                     # Returns ordered phase list
+    agency_cli phase next --current <phase> --verdict <verdict>   # Next phase after gate
+    agency_cli phase artifacts --phase <phase> --project-root <path>  # Artifact paths
+    agency_cli phase info --phase <phase>         # Phase metadata
+    agency_cli phase prepare --phase <phase> --project-root <path> --state-path <path> --script-path <path> --backlog-path <path> --objective <text> [--skip-assists]
+        # Combined: updates state + returns agent order + prompts in ONE call (reduces orchestrator turns)
+"""
+
+import argparse
+import os
+import json
+import sys
+
+# Canonical phase sequence
+PHASES = [
+    "plan",
+    "design",
+    "validate",
+    "specify",
+    "implement",
+    "review",
+    "test",
+    "document",
+]
+
+# Phase metadata
+PHASE_INFO = {
+    "plan": {
+        "index": 0,
+        "goal": "docs/PROJECT_BRIEF.md + backlog",
+        "has_gate": False,
+        "artifacts": ["docs/PROJECT_BRIEF.md"],
+    },
+    "design": {
+        "index": 1,
+        "goal": "docs/ARCHITECTURE.md + docs/CONTRACTS.md",
+        "has_gate": False,
+        "artifacts": ["docs/ARCHITECTURE.md", "docs/CONTRACTS.md"],
+    },
+    "validate": {
+        "index": 2,
+        "goal": "docs/VALIDATION.md with dual verdicts",
+        "has_gate": True,
+        "gate_type": "dual",
+        "artifacts": ["docs/VALIDATION.md"],
+    },
+    "specify": {
+        "index": 3,
+        "goal": "docs/TEST_SPEC.md + failing tests (RED)",
+        "has_gate": True,
+        "gate_type": "red",
+        "artifacts": ["docs/TEST_SPEC.md", "tests/"],
+    },
+    "implement": {
+        "index": 4,
+        "goal": "Source code in src/ (GREEN) + complementary tests",
+        "has_gate": False,
+        "artifacts": ["src/"],
+    },
+    "review": {
+        "index": 5,
+        "goal": "docs/REVIEW.md",
+        "has_gate": True,
+        "gate_type": "single",
+        "artifacts": ["docs/REVIEW.md"],
+    },
+    "test": {
+        "index": 6,
+        "goal": "Verify frozen suite + docs/TEST_REPORT.md",
+        "has_gate": True,
+        "gate_type": "single_extended",
+        "artifacts": ["tests/", "docs/TEST_REPORT.md"],
+    },
+    "document": {
+        "index": 7,
+        "goal": "README.md, CHANGELOG.md, docs/API_REFERENCE.md",
+        "has_gate": False,
+        "artifacts": ["README.md", "CHANGELOG.md", "docs/API_REFERENCE.md"],
+    },
+}
+
+
+def resolve_artifact_path(artifact_template: str, docs_path: str) -> str:
+    """Replace 'docs/' prefix with the dynamic docs_path if applicable."""
+    if artifact_template.startswith("docs/"):
+        return os.path.join(docs_path, artifact_template[5:])
+    return artifact_template
+
+
+def get_next_phase(current: str, verdict: str) -> dict:
+    """Determine next phase based on current phase and gate verdict."""
+    current = current.lower()
+    verdict = verdict.upper().strip()
+
+    if current == "validate":
+        # Dual gate: expects "APPROVED,APPROVED" or "REPROVED,APPROVED" etc.
+        parts = [v.strip() for v in verdict.split(",")]
+        if len(parts) != 2:
+            raise ValueError(
+                f"Validate gate requires two verdicts (PM,TL). Got: {verdict}"
+            )
+        pm_verdict, tl_verdict = parts
+
+        if pm_verdict == "APPROVED" and tl_verdict == "APPROVED":
+            return {
+                "next_phase": "specify",
+                "action": "proceed",
+                "reason": "Both approved -- proceed to Specify (RED)",
+            }
+        elif pm_verdict == "REPROVED":
+            return {
+                "next_phase": "plan",
+                "action": "loop_back",
+                "reason": "PM reproved -- return to Plan",
+            }
+        elif tl_verdict == "REPROVED":
+            return {
+                "next_phase": "design",
+                "action": "loop_back",
+                "reason": "TL reproved -- return to Design",
+            }
+
+    elif current == "specify":
+        # RED gate: verdict is RED_PASS, RED_FAIL_TESTS, or RED_FAIL_CONTRACT
+        if verdict == "RED_PASS":
+            return {
+                "next_phase": "implement",
+                "action": "proceed",
+                "reason": "RED baseline valid -- proceed to Implement (GREEN)",
+            }
+        elif verdict == "RED_FAIL_TESTS":
+            return {
+                "next_phase": "specify",
+                "action": "loop_back",
+                "reason": "Test spec incomplete or not failing correctly -- revise tests",
+            }
+        elif verdict == "RED_FAIL_CONTRACT":
+            return {
+                "next_phase": "design",
+                "action": "loop_back",
+                "reason": "Contracts missing/ambiguous -- return to Design & Contracts",
+            }
+
+    elif current == "review":
+        if verdict == "PASS":
+            return {
+                "next_phase": "test",
+                "action": "proceed",
+                "reason": "Review passed",
+            }
+        elif verdict == "FAIL":
+            return {
+                "next_phase": "implement",
+                "action": "loop_back",
+                "reason": "Blocking issues found",
+            }
+
+    elif current == "test":
+        if verdict == "PASS":
+            return {
+                "next_phase": "document",
+                "action": "proceed",
+                "reason": "All tests pass",
+            }
+        elif verdict == "FAIL_BUG":
+            return {
+                "next_phase": "implement",
+                "action": "loop_back",
+                "reason": "Bug found -- return to Implement",
+            }
+        elif verdict == "FAIL_TEST":
+            return {
+                "next_phase": "specify",
+                "action": "loop_back",
+                "reason": "Test issue -- QA owns the suite, return to Specify to revise tests, then re-verify",
+            }
+
+    raise ValueError(f"Invalid phase/verdict combination: {current}/{verdict}")
+
+
+def get_artifacts(phase: str, project_root: str, docs_path: str = None) -> dict:
+    """Resolve artifact absolute paths for a phase.
+
+    If docs_path is provided, artifacts with 'docs/' prefix are resolved
+    to the dynamic docs directory instead.
+    """
+    phase = phase.lower()
+    if phase not in PHASE_INFO:
+        raise ValueError(f"Unknown phase: {phase}. Valid: {', '.join(PHASES)}")
+
+    info = PHASE_INFO[phase]
+    resolved = []
+    for artifact in info["artifacts"]:
+        if docs_path:
+            artifact_resolved = resolve_artifact_path(artifact, docs_path)
+        else:
+            artifact_resolved = artifact
+        abs_path = (
+            os.path.join(project_root, artifact_resolved)
+            if not os.path.isabs(artifact_resolved)
+            else artifact_resolved
+        )
+        resolved.append(
+            {
+                "relative": artifact_resolved,
+                "absolute": abs_path,
+                "exists": os.path.exists(abs_path),
+            }
+        )
+
+    return {"phase": phase, "artifacts": resolved}
+
+
+def validate_artifacts(phase: str, project_root: str, docs_path: str = None) -> dict:
+    """Check if required artifacts from a phase exist before proceeding."""
+    phase = phase.lower()
+    if phase not in PHASE_INFO:
+        raise ValueError(f"Unknown phase: {phase}. Valid: {', '.join(PHASES)}")
+
+    info = PHASE_INFO[phase]
+    results = []
+    all_exist = True
+
+    for artifact in info["artifacts"]:
+        if docs_path:
+            artifact = resolve_artifact_path(artifact, docs_path)
+        abs_path = (
+            os.path.join(project_root, artifact)
+            if not os.path.isabs(artifact)
+            else artifact
+        )
+        exists = os.path.exists(abs_path)
+        is_dir = os.path.isdir(abs_path)
+        is_empty = False
+
+        if exists:
+            if is_dir:
+                # Check directory is not empty
+                is_empty = len(os.listdir(abs_path)) == 0
+            else:
+                is_empty = os.path.getsize(abs_path) == 0
+
+        valid = exists and not is_empty
+        if not valid:
+            all_exist = False
+
+        results.append(
+            {
+                "artifact": artifact,
+                "absolute": abs_path,
+                "exists": exists,
+                "is_empty": is_empty,
+                "valid": valid,
+            }
+        )
+
+    # Determine which phase this blocks
+    idx = PHASES.index(phase)
+    next_phase = PHASES[idx + 1] if idx < len(PHASES) - 1 else None
+
+    return {
+        "phase": phase,
+        "all_valid": all_exist,
+        "can_proceed": all_exist,
+        "next_phase": next_phase,
+        "artifacts": results,
+        "message": (
+            f"All artifacts for {phase} are present. Ready to proceed to {next_phase}."
+            if all_exist
+            else f"Missing artifacts for {phase}: {', '.join(a['artifact'] for a in results if not a['valid'])}"
+        ),
+    }
+
+
+def prepare_phase(args: list[str]) -> dict:
+    """Combined operation: update state + return agent order + all prompts in ONE call.
+
+    This replaces 3+ separate CLI calls per phase transition, reducing orchestrator turns
+    and context growth in the main session.
+    """
+    parser = argparse.ArgumentParser(prog="agency_cli phase prepare")
+    parser.add_argument("--phase", required=True, help="Phase to prepare")
+    parser.add_argument("--project-root", required=True, help="Project root path")
+    parser.add_argument("--state-path", required=True, help="Path to STATE.json")
+    parser.add_argument(
+        "--script-path", required=True, help="Path to backlog_manager.py"
+    )
+    parser.add_argument(
+        "--backlog-path", required=True, help="Path to backlog directory"
+    )
+    parser.add_argument(
+        "--objective", required=False, default=None, help="Project objective"
+    )
+    parser.add_argument(
+        "--objective-stdin", action="store_true", help="Read objective from stdin"
+    )
+    parser.add_argument(
+        "--skip-assists",
+        action="store_true",
+        help="Exclude assist agents (only spawn leads)",
+    )
+    opts = parser.parse_args(args)
+
+    if opts.objective_stdin:
+        objective = sys.stdin.read().strip()
+    elif opts.objective:
+        objective = opts.objective
+    else:
+        raise ValueError("Either --objective or --objective-stdin is required")
+
+    phase = opts.phase.lower().strip()
+    if phase not in PHASES:
+        raise ValueError(f"Unknown phase: {phase}. Valid: {', '.join(PHASES)}")
+
+    # --- 1. Check prerequisites via state ---
+    from commands.state import (
+        _load_state,
+        _save_state,
+        _get_now_iso,
+        PHASES as STATE_PHASES,
+    )
+
+    state_path = os.path.abspath(opts.state_path)
+    state = _load_state(state_path)
+
+    # Check can-proceed logic inline (avoid circular import overhead)
+    dependencies = {
+        "plan": [],
+        "design": ["plan"],
+        "validate": ["design"],
+        "specify": ["validate"],
+        "implement": ["specify"],
+        "review": ["implement"],
+        "test": ["review"],
+        "document": ["test"],
+    }
+    for required in dependencies.get(phase, []):
+        req_status = state["phases"][required]["status"]
+        if req_status != "completed":
+            return {
+                "ready": False,
+                "blocked_by": required,
+                "reason": f"Phase {required} has status: {req_status}",
+            }
+
+    # --- 2. Mark phase in_progress ---
+    phase_obj = state["phases"][phase]
+    old_status = phase_obj["status"]
+    now = _get_now_iso()
+    if old_status != "in_progress":
+        phase_obj["status"] = "in_progress"
+        phase_obj["started_at"] = now
+        state["current_phase"] = phase
+    _save_state(state_path, state)
+
+    # --- 3. Read docs_path from state ---
+    docs_path = state.get("docs_path")
+    if not docs_path:
+        docs_path = os.path.join(opts.project_root, "docs").replace("\\", "/")
+
+    # --- 4. Get agent order + prompts ---
+    from commands.agent import (
+        AGENT_MATRIX,
+        PHASE_ORDER,
+        GATE_SUFFIXES,
+        get_agent_name,
+        generate_prompt,
+        resolve_model,
+        validate_phase as agent_validate_phase,
+    )
+
+    # Derive CLI path from this script's own location
+    cli_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "agency_cli.py")
+    )
+
+    waves = []
+    for i, wave_roles in enumerate(PHASE_ORDER.get(phase, [])):
+        wave_agents = []
+        for role in wave_roles:
+            key = (phase, role)
+            if key not in AGENT_MATRIX:
+                continue
+            info = AGENT_MATRIX[key]
+
+            # Skip assists if --skip-assists
+            if opts.skip_assists and info["type"] == "assist":
+                continue
+
+            agent_name = get_agent_name(role, phase, info["type"])
+            prompt = generate_prompt(
+                role,
+                phase,
+                opts.project_root,
+                opts.script_path,
+                opts.backlog_path,
+                objective,
+                info["type"],
+                cli_path=cli_path,
+                state_path=opts.state_path,
+                docs_path=docs_path,
+            )
+
+            wave_agents.append(
+                {
+                    "role": role,
+                    "name": agent_name,
+                    "agent": f"omni-sw-{role}",
+                    "model": resolve_model(info["model"]),
+                    "model_tier": info["model"],
+                    "type": info["type"],
+                    "prompt": prompt,
+                    "skill_command": info["skill"],
+                }
+            )
+
+        if wave_agents:
+            waves.append(
+                {
+                    "wave": i + 1,
+                    "parallel": len(wave_agents) > 1,
+                    "agents": wave_agents,
+                }
+            )
+
+    # --- 5. Get phase artifacts (resolved through docs_path) ---
+    info = PHASE_INFO[phase]
+    artifacts = []
+    for artifact in info["artifacts"]:
+        resolved = resolve_artifact_path(artifact, docs_path)
+        abs_path = (
+            os.path.join(opts.project_root, resolved).replace("\\", "/")
+            if not os.path.isabs(resolved)
+            else resolved.replace("\\", "/")
+        )
+        artifacts.append(
+            {
+                "relative": resolved,
+                "absolute": abs_path,
+                "exists": os.path.exists(abs_path),
+            }
+        )
+
+    return {
+        "ready": True,
+        "phase": phase,
+        "goal": info["goal"],
+        "has_gate": info.get("has_gate", False),
+        "docs_path": docs_path,
+        "state_updated": True,
+        "skip_assists": opts.skip_assists,
+        "waves": waves,
+        "total_agents": sum(len(w["agents"]) for w in waves),
+        "artifacts": artifacts,
+    }
+
+
+def handle_phase(args: list[str]) -> dict | list:
+    if not args:
+        raise ValueError(
+            "Subcommand required: sequence, next, artifacts, info, validate-artifacts, prepare"
+        )
+
+    subcmd = args[0]
+
+    if subcmd == "sequence":
+        return {"phases": PHASES, "total": len(PHASES)}
+
+    elif subcmd == "next":
+        parser = argparse.ArgumentParser(prog="agency_cli phase next")
+        parser.add_argument("--current", required=True, help="Current phase name")
+        parser.add_argument("--verdict", required=True, help="Gate verdict(s)")
+        opts = parser.parse_args(args[1:])
+        return get_next_phase(opts.current, opts.verdict)
+
+    elif subcmd == "artifacts":
+        parser = argparse.ArgumentParser(prog="agency_cli phase artifacts")
+        parser.add_argument("--phase", required=True, help="Phase name")
+        parser.add_argument("--project-root", required=True, help="Project root path")
+        opts = parser.parse_args(args[1:])
+        return get_artifacts(opts.phase, opts.project_root)
+
+    elif subcmd == "info":
+        parser = argparse.ArgumentParser(prog="agency_cli phase info")
+        parser.add_argument("--phase", required=True, help="Phase name")
+        opts = parser.parse_args(args[1:])
+        phase = opts.phase.lower()
+        if phase not in PHASE_INFO:
+            raise ValueError(f"Unknown phase: {phase}")
+        return {"phase": phase, **PHASE_INFO[phase]}
+
+    elif subcmd == "validate-artifacts":
+        parser = argparse.ArgumentParser(prog="agency_cli phase validate-artifacts")
+        parser.add_argument("--phase", required=True, help="Phase to validate")
+        parser.add_argument("--project-root", required=True, help="Project root path")
+        opts = parser.parse_args(args[1:])
+        return validate_artifacts(opts.phase, opts.project_root)
+
+    elif subcmd == "prepare":
+        return prepare_phase(args[1:])
+
+    else:
+        raise ValueError(
+            f"Unknown subcommand: {subcmd}. Valid: sequence, next, artifacts, info, validate-artifacts, prepare"
+        )
