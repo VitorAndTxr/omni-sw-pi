@@ -35,6 +35,6 @@ The orchestrator (`omni-sw-orchestrator`) drives the flow automatically; each ag
 | File | Purpose |
 | ------ | --------- |
 | `agent-common.md` | Path resolution, backlog integration, permissions, state tracking, decision log |
-| `models.json` | Maps abstract tiers (`opus`/`sonnet`/`haiku`) to concrete pi model ids |
+| `models.json` | Per-agent model config, keyed by `"<phase>:<role>"` → concrete pi model id (any provider) or `null` to inherit the session model |
 | `templates/` | Artifact templates (brief, architecture, contracts, test spec, review, test report, validation) |
 | `scripts/agency_cli.py` | Deterministic CLI: phase state machine, gates, backlog batch ops, pipelines, metrics |

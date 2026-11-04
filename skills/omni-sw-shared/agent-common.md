@@ -2,6 +2,22 @@
 
 Shared setup for all agency agents (PM, PO, TL, Dev, QA). Each agent's SKILL.md references this file.
 
+## Git Policy (HARD RULE)
+
+Agents NEVER run `git push`, `git merge`, `git rebase`, `git tag`, or create/delete/switch branches (`git checkout -b`, `git switch -c`, `git branch -d`), UNLESS the orchestrator's spawn prompt explicitly grants that exact operation for this run — and the orchestrator only grants it with the human operator's explicit approval.
+
+Commits are allowed ONLY under the isolation protocols below, and only when your spawn prompt carries the corresponding grant:
+
+- **Default (no isolation grant):** NEVER run `git commit`. Leave all created/modified/deleted files in the working tree (staged or unstaged is fine) and end your report with a `FILES CHANGED:` list (path + operation) so the orchestrator and the human can review and commit.
+- **`GIT_GRANT: COMMIT_LANE`:** you own a pi-subagents managed lane worktree. You MAY run `git commit` on the CURRENT branch of your worktree (`pi-subagents/*`). Never switch branches, never push, never merge, never touch other branches. Commit messages must start with `[lane:<feature>]`.
+- **`GIT_GRANT: COMMIT_INSTANCE`:** the run is instance-isolated. You MAY run `git commit` on the CURRENT branch of the instance worktree (`agency/*`). Never switch branches, never push, never merge, never touch other branches. Commit messages must start with `[agency]`.
+
+In every mode:
+
+- Never stage or commit files you did not author; never touch unrelated working-tree changes (e.g., pre-existing dirty files from earlier cycles).
+- When you cannot commit, end your report with a `FILES CHANGED:` list (path + operation).
+- Only the orchestrator merges lane branches, pushes, and opens PRs — always after presenting the change set to the human and receiving explicit approval. Commits carry clear attribution of which agent produced the content.
+
 ## Resolved Paths (from Orchestrator)
 
 When spawned by the orchestrator, your prompt includes all resolved paths in a `Resolved paths:` block. Parse and use them directly:
@@ -13,24 +29,23 @@ When spawned by the orchestrator, your prompt includes all resolved paths in a `
 - `STATE_PATH` — absolute path to `STATE.json`
 - `DOCS_PATH` — working documents directory for this SDLC run (timestamped subfolder under `agent_docs/`)
 
+The orchestrator may also add isolation context to the same block:
+
+- `CODE_ROOT` — directory where ALL code edits happen. In default runs it equals `PROJECT_ROOT`. In instance-isolated runs it is the instance worktree (branch `agency/*`), and in lane-isolated runs it is your lane worktree (branch `pi-subagents/*`). Your process cwd is already set to `CODE_ROOT`; treat every relative code path as resolved there. Agency artifacts (`DOCS_PATH`, `STATE_PATH`, `BACKLOG_PATH`) stay at their absolute paths — do NOT relocate or re-resolve them.
+- `GIT_GRANT` — `COMMIT_LANE` or `COMMIT_INSTANCE`; see the Git Policy above. Absent means no commits.
+- `LANE_ID` — feature area of your lane (lane-isolated runs only). Keep it in commit message prefixes.
+
 **Do NOT re-resolve these via Glob.** The orchestrator already normalized them for bash.
 
 ### Fallback (standalone usage only)
 
-If spawned without resolved paths (e.g., manual `/skill:omni-sw-pm plan` invocation), resolve `{CLI}` once in this order (first match wins):
+If spawned without resolved paths (e.g., manual `/skill:omni-sw-pm plan` invocation), find the CLI once:
 
-1. `$OMNI_SW_CLI` — set by the `pi-omni-sw` extension.
-2. `~/.pi/agent/omni-sw.json` → `cli` — path manifest written by that extension.
-3. Glob `**/omni-sw-shared/scripts/agency_cli.py` — standalone install.
-
-```bash
-CLI="${OMNI_SW_CLI:-}"
-if [ -z "$CLI" ] && [ -f "$HOME/.pi/agent/omni-sw.json" ]; then
-  CLI=$(python -c "import json,os;print(json.load(open(os.path.expanduser('~/.pi/agent/omni-sw.json')))['cli'])" 2>/dev/null)
-fi
+```
+Glob pattern: "**/shared/scripts/agency_cli.py"
 ```
 
-Then resolve all other paths:
+Store as `{CLI}`, then resolve all other paths:
 
 ```bash
 python "{CLI}" init --scan-root {workspace}

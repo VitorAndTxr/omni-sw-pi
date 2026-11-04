@@ -31,10 +31,9 @@ def _load_json_file(filepath: str) -> dict:
         return json.load(f)
 
 
-def _get_feature_branch_name(feature_area: str) -> str:
-    """Generate a branch name from feature area."""
-    # Normalize to lowercase and replace spaces with hyphens
-    return f"feat/{feature_area.lower().replace(' ', '-')}"
+def _get_feature_slug(feature_area: str) -> str:
+    """Generate an informational slug from a feature area."""
+    return feature_area.lower().replace(' ', '-')
 
 
 def _extract_dependencies(story: dict) -> list[str]:
@@ -134,7 +133,10 @@ def pipeline_group(backlog_path: str, script_path: str, status: str = "Validated
         group = {
             "feature_area": feature,
             "stories": [s.get("id", "") for s in groups_by_feature[feature]],
-            "branch_name": _get_feature_branch_name(feature),
+            # Informational slug only. Under lane worktrees the REAL lane branches
+            # are pi-subagents/* reported in each child result's artifactPaths —
+            # never merge from this field.
+            "feature_slug": _get_feature_slug(feature),
             "can_parallel": True,
         }
 
@@ -142,7 +144,7 @@ def pipeline_group(backlog_path: str, script_path: str, status: str = "Validated
         if feature_deps[feature]:
             depends_on_features = [f for f in feature_deps[feature] if f in wave_assignment]
             if depends_on_features:
-                group["depends_on"] = [_get_feature_branch_name(f) for f in depends_on_features]
+                group["depends_on"] = [_get_feature_slug(f) for f in depends_on_features]
                 group["can_parallel"] = False
 
         waves_dict[wave_num].append(group)
@@ -157,22 +159,37 @@ def pipeline_group(backlog_path: str, script_path: str, status: str = "Validated
 
     # Count parallelizable groups (groups with can_parallel=true)
     parallelizable = sum(1 for wave in waves for group in wave.get("groups", []) if group.get("can_parallel", False))
+    # Lane worktrees activate when the FIRST wave has >=2 lanes (the orchestrator
+    # SKILL's activation check is defined over wave 1; keep the two in sync).
+    wave1_parallel = len([g for g in waves[0]["groups"] if g.get("can_parallel", False)]) if waves else 0
 
     return {
         "waves": waves,
         "total_groups": len(groups_by_feature),
         "total_stories": len(stories),
         "parallelizable_groups": parallelizable,
+        # Worktree mode activates automatically when wave 1 has >= 2 lanes:
+        # each parallelizable group gets its own pi-subagents managed worktree + lane
+        # branch; reviewers/verifiers inspect inside the lane worktree; the orchestrator
+        # merges lane branches sequentially after user approval. See the orchestrator
+        # SKILL.md section "Parallel Pipeline Execution (lane worktrees)".
+        "worktree_mode": wave1_parallel >= 2,
     }
 
 
 def pipeline_agents(phase: str, feature_area: str, project_root: str, script_path: str,
-                   backlog_path: str, objective: str) -> dict:
+                   backlog_path: str, objective: str,
+                   cli_path: str | None = None, state_path: str | None = None,
+                   docs_path: str | None = None) -> dict:
     """
     Return agent configuration for a single feature pipeline phase.
 
     Gets agents for the phase, filters to those relevant for this feature,
     and generates feature-scoped prompts.
+
+    `cli_path`/`state_path`/`docs_path` are strongly recommended: without them the
+    generated prompts lack CLI_PATH/STATE_PATH/DOCS_PATH (and the role-skill path),
+    and the per-lane artifact paths cannot be computed.
     """
     phase = validate_phase(phase)
 
@@ -219,21 +236,41 @@ def pipeline_agents(phase: str, feature_area: str, project_root: str, script_pat
         else:
             agent_name = f"{role}-{phase}-{feature_area.replace(' ', '-').lower()}"
 
-        # Generate feature-scoped prompt
+        # Generate feature-scoped prompt (with full resolved paths when available)
         prompt = generate_prompt(
             role, phase, project_root, script_path, backlog_path,
-            feature_objective, agent_type
+            feature_objective, agent_type,
+            cli_path=cli_path, state_path=state_path, docs_path=docs_path
         )
+
+        # Per-lane artifact paths: concurrent lanes must never share one
+        # REVIEW.md/TEST_REPORT.md (a failing lane's verdict could be overwritten
+        # by a passing lane's). The orchestrator pastes these into the spawn prompt
+        # and uses them for `gate parse --file`.
+        slug = feature_area.lower().replace(' ', '-') if feature_area else "default"
+        artifacts = {}
+        if docs_path and phase == "review":
+            artifacts["review"] = f"{docs_path}/pipelines/{slug}/REVIEW.md".replace("\\", "/")
+        if docs_path and phase == "test":
+            artifacts["test"] = f"{docs_path}/pipelines/{slug}/TEST_REPORT.md".replace("\\", "/")
 
         agents.append({
             "name": agent_name,
             "agent": f"omni-sw-{role}",
             "role": role,
-            "model": resolve_model(info["model"]),
-            "model_tier": info["model"],
+            "model": resolve_model(phase, role),
             "type": agent_type,
             "prompt": prompt,
             "stories": story_ids,
+            # Worktree isolation hints (consumed by the orchestrator when worktree_mode
+            # is active):
+            #   dev lead in implement -> spawns with worktree:true and a lane-commit grant
+            #   any tl/qa agent in review/test (leads AND assists) -> spawn with
+            #     cwd=<lane worktree>; assists must also see the lane's code, otherwise
+            #     they review a stale tree from the main checkout
+            "worktree": role == "dev" and phase == "implement" and agent_type == "lead",
+            "lane_cwd": role in ("tl", "qa") and phase in ("review", "test"),
+            **({"artifacts": artifacts} if artifacts else {}),
         })
 
     return {
@@ -351,9 +388,13 @@ def handle_pipeline(args: list[str]) -> dict:
         parser.add_argument("--script-path", required=True)
         parser.add_argument("--backlog-path", required=True)
         parser.add_argument("--objective", required=True)
+        parser.add_argument("--cli-path", default=None)
+        parser.add_argument("--state-path", default=None)
+        parser.add_argument("--docs-path", default=None)
         opts = parser.parse_args(args[1:])
         return pipeline_agents(opts.phase, opts.feature, opts.project_root,
-                             opts.script_path, opts.backlog_path, opts.objective)
+                             opts.script_path, opts.backlog_path, opts.objective,
+                             opts.cli_path, opts.state_path, opts.docs_path)
 
     elif subcmd == "status":
         parser = argparse.ArgumentParser(prog="agency_cli pipeline status")

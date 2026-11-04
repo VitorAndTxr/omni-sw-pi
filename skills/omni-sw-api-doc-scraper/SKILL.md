@@ -1,6 +1,13 @@
 ---
 name: omni-sw-api-doc-scraper
-description: Agentic web scraper that reads API documentation from a URL, extracts endpoints, authentication,  models, and error handling into a structured corpus, then invokes /skill:omni-sw-skill-creator to generate  a new skill that serves as an interactive reference for that API. Use when: (1) user provides a URL to an API documentation site, (2) user says "scrape api docs", "create api reference skill", "import api documentation", "api doc scraper", (3) user wants to create a skill from external  API documentation for future technical Q&A.
+description: >-
+  Agentic web scraper that reads API documentation from a URL, extracts endpoints,
+  authentication, models, and error handling into a structured corpus, then invokes
+  /skill:omni-sw-skill-creator to generate a new skill that serves as an interactive
+  reference for that API. Use when: (1) user provides a URL to an API documentation
+  site, (2) user says "scrape api docs", "create api reference skill", "import api
+  documentation", "api doc scraper", (3) user wants to create a skill from external
+  API documentation for future technical Q&A.
 argument-hint: <url> [--name <skill-name>]
 
 context: fork

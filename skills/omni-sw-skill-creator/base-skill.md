@@ -1,5 +1,5 @@
 ---
-model: opus
+model: inherit
 description: descrição da skill
 argument-hint: [arg1] [arg2]
 

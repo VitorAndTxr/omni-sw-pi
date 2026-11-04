@@ -182,7 +182,7 @@ def get_next_phase(current: str, verdict: str) -> dict:
     raise ValueError(f"Invalid phase/verdict combination: {current}/{verdict}")
 
 
-def get_artifacts(phase: str, project_root: str, docs_path: str = None) -> dict:
+def get_artifacts(phase: str, project_root: str, docs_path: str | None = None) -> dict:
     """Resolve artifact absolute paths for a phase.
 
     If docs_path is provided, artifacts with 'docs/' prefix are resolved
@@ -215,7 +215,7 @@ def get_artifacts(phase: str, project_root: str, docs_path: str = None) -> dict:
     return {"phase": phase, "artifacts": resolved}
 
 
-def validate_artifacts(phase: str, project_root: str, docs_path: str = None) -> dict:
+def validate_artifacts(phase: str, project_root: str, docs_path: str | None = None) -> dict:
     """Check if required artifacts from a phase exist before proceeding."""
     phase = phase.lower()
     if phase not in PHASE_INFO:
@@ -303,6 +303,17 @@ def prepare_phase(args: list[str]) -> dict:
         action="store_true",
         help="Exclude assist agents (only spawn leads)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Force activation=spawn even when a resumable session was recorded",
+    )
+    parser.add_argument(
+        "--iteration",
+        type=int,
+        default=None,
+        help="Override the derived iteration number (default: recorded gate iterations + 1)",
+    )
     opts = parser.parse_args(args)
 
     if opts.objective_stdin:
@@ -317,12 +328,7 @@ def prepare_phase(args: list[str]) -> dict:
         raise ValueError(f"Unknown phase: {phase}. Valid: {', '.join(PHASES)}")
 
     # --- 1. Check prerequisites via state ---
-    from commands.state import (
-        _load_state,
-        _save_state,
-        _get_now_iso,
-        PHASES as STATE_PHASES,
-    )
+    from state import _get_now_iso, _load_state, _save_state
 
     state_path = os.path.abspath(opts.state_path)
     state = _load_state(state_path)
@@ -357,20 +363,66 @@ def prepare_phase(args: list[str]) -> dict:
         state["current_phase"] = phase
     _save_state(state_path, state)
 
+    # --- 2.1 Derive loop-back state (iteration + why the gate failed) ---
+    # The activation journal (`agent_sessions`) is authoritative: the orchestrator
+    # records one entry per spawn/resume, so the iteration number is stable across
+    # context compaction and idempotent when the same phase is prepared twice.
+    # Gate verdict counts are deliberately NOT used here: both the agent and the
+    # orchestrator may record the same verdict, which would inflate the number.
+    gate = phase_obj.get("gate") or {}
+    gate_iterations = int(gate.get("iterations", 0) or 0)
+    prior_verdict = None
+    for verdict_record in reversed(gate.get("verdicts") or []):
+        if verdict_record.get("verdict"):
+            prior_verdict = verdict_record["verdict"]
+            break
+        if verdict_record.get("combined"):
+            prior_verdict = verdict_record["combined"]
+            break
+    agent_sessions = state.get("agent_sessions") or {}
+    phase_prefix = f"{phase}:"
+    # One activation event is recorded per (round, role), so the highest activation
+    # count among the roles of this phase IS the number of completed rounds. Correct
+    # whether or not the orchestrator passes --iteration to `state agent-session`.
+    completed_rounds = 0
+    for key, entry in agent_sessions.items():
+        if not key.startswith(phase_prefix):
+            continue
+        completed_rounds = max(completed_rounds, int(entry.get("activations") or 1))
+    loop_back = completed_rounds > 0
+    iteration = (
+        opts.iteration if opts.iteration is not None else completed_rounds + 1
+    )
+
     # --- 3. Read docs_path from state ---
     docs_path = state.get("docs_path")
     if not docs_path:
         docs_path = os.path.join(opts.project_root, "docs").replace("\\", "/")
 
+    # --- 3.1 Per-project hygiene policy (agent_docs/agency/hygiene.json) ---
+    # Appended to every prompt of the phases in HYGIENE_PHASES when the project
+    # opts in by having the config file. Absent file = no injection (pre-config
+    # behavior preserved). Malformed file = warning in the output, prepare
+    # continues without policy (never fails the phase transition).
+    from hygiene import HYGIENE_PHASES, hygiene_policy_section, load_hygiene_config
+
+    hygiene = load_hygiene_config(opts.project_root)
+    if hygiene["status"] == "invalid":
+        print(f"Warning: {hygiene['warning']}", file=sys.stderr)
+    hygiene_section = (
+        hygiene_policy_section(hygiene["config"])
+        if hygiene["status"] == "loaded"
+        else ""
+    )
+    inject_hygiene = phase in HYGIENE_PHASES and bool(hygiene_section)
+
     # --- 4. Get agent order + prompts ---
-    from commands.agent import (
+    from agent import (
         AGENT_MATRIX,
         PHASE_ORDER,
-        GATE_SUFFIXES,
-        get_agent_name,
         generate_prompt,
+        get_agent_name,
         resolve_model,
-        validate_phase as agent_validate_phase,
     )
 
     # Derive CLI path from this script's own location
@@ -392,6 +444,15 @@ def prepare_phase(args: list[str]) -> dict:
                 continue
 
             agent_name = get_agent_name(role, phase, info["type"])
+            session_key = f"{phase}:{role}"
+            recorded = agent_sessions.get(session_key) or {}
+            recorded_run_id = recorded.get("run_id")
+            can_resume = bool(
+                loop_back
+                and not opts.fresh
+                and recorded_run_id
+                and recorded.get("status") not in ("stopped", "failed")
+            )
             prompt = generate_prompt(
                 role,
                 phase,
@@ -403,20 +464,40 @@ def prepare_phase(args: list[str]) -> dict:
                 cli_path=cli_path,
                 state_path=opts.state_path,
                 docs_path=docs_path,
+                iteration=iteration,
+                prior_verdict=prior_verdict,
+                resumed=can_resume,
             )
+            if inject_hygiene:
+                prompt = f"{prompt}\n\n{hygiene_section}"
 
             wave_agents.append(
                 {
                     "role": role,
                     "name": agent_name,
                     "agent": f"omni-sw-{role}",
-                    "model": resolve_model(info["model"]),
-                    "model_tier": info["model"],
+                    "model": resolve_model(phase, role),
                     "type": info["type"],
                     "prompt": prompt,
                     "skill_command": info["skill"],
+                    "iteration": iteration,
+                    "activation": "resume" if can_resume else "spawn",
+                    "resume_key": session_key,
+                    "resume_from_run_id": recorded_run_id,
+                    "prompt_kind": "continuation" if can_resume else "full",
                 }
             )
+            if loop_back and not can_resume:
+                reason = (
+                    "--fresh was passed"
+                    if opts.fresh
+                    else (
+                        "no run id recorded for this session key"
+                        if not recorded_run_id
+                        else f"recorded session status is '{recorded.get('status')}'"
+                    )
+                )
+                wave_agents[-1]["fresh_fallback_reason"] = reason
 
         if wave_agents:
             waves.append(
@@ -453,6 +534,20 @@ def prepare_phase(args: list[str]) -> dict:
         "docs_path": docs_path,
         "state_updated": True,
         "skip_assists": opts.skip_assists,
+        "iteration": iteration,
+        "loop_back": loop_back,
+        "gate_iterations": gate_iterations,
+        "prior_verdict": prior_verdict,
+        "hygiene_policy": {
+            "status": hygiene["status"],
+            "path": hygiene["path"],
+            "injected": inject_hygiene,
+            **(
+                {"warning": hygiene["warning"]}
+                if "warning" in hygiene
+                else {}
+            ),
+        },
         "waves": waves,
         "total_agents": sum(len(w["agents"]) for w in waves),
         "artifacts": artifacts,

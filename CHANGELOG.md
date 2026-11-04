@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
+### Added
+
+- **Git worktree isolation** (two levels):
+  - Instance isolation — one `agency/<slug>-<timestamp>` branch + linked git worktree per orchestrator run; agency artifacts live inside the instance so concurrent runs never collide; ends with a PR (`worktree init/status/pr/remove`).
+  - Parallel lane worktrees — `pipeline group` now reports `worktree_mode` (auto for ≥ 2 independent features); each feature lane spawns in a pi-subagents managed worktree (`pi-subagents/*` branch) with `GIT_GRANT: COMMIT_LANE`; TL review and QA verify run inside the lane worktree; sequential approved `worktree merge` with clean conflict abort; `worktree.cleanup` fallback.
+- Per-project **hygiene policy** (`agent_docs/agency/hygiene.json`): restrictive defaults injected into agent prompts (no narrative comments, no XML summaries, no agent-doc references in tests, forbidden tokens).
+- **Gate loop-backs** continue the same child session: activation journal in `STATE.json` (`state agent-session/agent-sessions`), `phase prepare` emits `activation: resume` with continuation prompts and `--fresh` escape hatch.
+- Lite mode (4-phase flow) for small objectives; `pipeline agents` per-lane artifact paths (`pipelines/<feature>/REVIEW.md`, `TEST_REPORT.md`) and `--cli-path/--state-path/--docs-path` flags.
+
+### Changed
+
+- Model routing migrated from abstract tiers (`opus`/`sonnet`/`haiku`) to per-agent `<phase>:<role>` keys in `models.json` (provider-agnostic ids + `:thinking` suffixes).
+- Git Policy hardened: grants (`COMMIT_LANE`/`COMMIT_INSTANCE`) scoped per isolation protocol, one isolation block per spawn prompt, reviewers get no grant; clean-tree checks tolerate agency scratch (`agent_docs/`, `.pi/`); branch deletion runs against the main checkout root; PRs require an explicit `--base`.
+- Claude Code hooks opt-in removed (always installed for compatibility); `agency_cli worktree` command added.
+
 ## [0.1.0] - 2026-09-14
 
 ### Added

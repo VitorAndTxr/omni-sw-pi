@@ -19,19 +19,15 @@ Configure a project directory for the SDLC Agency. This runs in the main session
 
 ## Step 1: Resolve the CLI Path
 
-Resolve `{CLI}` in this order (first match wins):
+Find this skill's own SKILL.md to derive the CLI path:
 
-1. `$OMNI_SW_CLI` — set by the `pi-omni-sw` extension when installed as a pi package.
-2. `~/.pi/agent/omni-sw.json` → `cli` — path manifest written by that extension.
-3. Glob `**/omni-sw-shared/scripts/agency_cli.py` — standalone (non-package) install.
-
-```bash
-CLI="${OMNI_SW_CLI:-}"
-if [ -z "$CLI" ] && [ -f "$HOME/.pi/agent/omni-sw.json" ]; then
-  CLI=$(python -c "import json,os;print(json.load(open(os.path.expanduser('~/.pi/agent/omni-sw.json')))['cli'])" 2>/dev/null)
-fi
-ls "$CLI"
 ```
+Glob pattern: "**/omni-sw-init-omni-sw/SKILL.md"
+```
+
+From the SKILL.md path, the CLI is at `../omni-sw-shared/scripts/agency_cli.py` relative to the `omni-sw-init-omni-sw/` directory.
+
+Verify it exists with `ls`, then store the resolved path as `{CLI}`.
 
 ## Step 2: Determine What Exists
 
@@ -90,7 +86,11 @@ MSBUILD_EXE_PATH="" python "{CLI}" setup --scan-root "{PROJECT_ROOT}" --verify
 
 Report the results to the user.
 
-Note: the `hooks` status is skipped by default. Claude Code notification hooks are opt-in for pi (`OMNI_SW_CLAUDE_HOOKS=1`); pi does not need them.
+Note: the `hooks` status in the output refers to Claude Code notification hooks (.claude/hooks.json) — pi does not use them and they can be safely ignored.
+
+### Hygiene policy (per-project)
+
+`agency_cli init --scan-root "{PROJECT_ROOT}" --create-dirs` creates `agent_docs/agency/hygiene.json` with a restrictive default: narrative comments, `<summary>`/`<remarks>` blocks in production code, and agent-document references (US-/AC-/DEC-/CONTRACTS/TEST_SPEC/agent_docs/§) in test code are all forbidden, plus the listed `forbiddenTokens`. The team should review and adjust this file per project (e.g. set `"xmlSummaries": true` if the project wants XML doc blocks; `true` = allowed). While the file exists, `agency_cli phase prepare` injects the enabled rules into every design/specify/implement/review/test agent prompt; if the file is absent, nothing is injected. Tell the user the file exists and should be tuned to the project's conventions.
 
 Then tell the user:
   > Everything is ready. Run `/skill:omni-sw-orchestrator "<objective>"` to start the SDLC.

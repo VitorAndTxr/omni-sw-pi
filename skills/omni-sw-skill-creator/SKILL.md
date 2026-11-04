@@ -231,7 +231,7 @@ Collect the skill metadata from the user using `ask_user_question`. The followin
 - **dependencies**: Required software packages (e.g., `python>=3.8`).
 - **disable-model-invocation**: Set to `true` to prevent automatic loading; the skill will only trigger via `/name`. Default: `false`.
 - **hooks**: Skill-scoped hooks (PreToolUse, PostToolUse, Stop) that apply only while the skill is active.
-- **model**: Model to use (`sonnet`, `opus`, `haiku`, or `inherit`). Default: `inherit`.
+- **model**: Model to use (a concrete pi model id of any provider, e.g. `anthropic/claude-sonnet-4`, or `inherit`). Default: `inherit`.
 - **user-invocable**: Set to `false` to hide from the `/` menu (useful for background knowledge). Default: `true`.
 
 Ask for the required fields first. Then present the optional fields and ask which ones the user wants to configure. Use sensible defaults for any optional fields not explicitly set.

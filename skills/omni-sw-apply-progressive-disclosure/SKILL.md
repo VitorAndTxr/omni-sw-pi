@@ -34,7 +34,7 @@ If no argument: run `analyze` by default.
 
 This skill uses `agency_cli.py` for all deterministic token analysis operations:
 
-Resolve CLI path in this order (first match wins): `$OMNI_SW_CLI` (pi package), then `~/.pi/agent/omni-sw.json` → `cli`, then Glob `**/omni-sw-shared/scripts/agency_cli.py` (standalone). Store result as `{CLI}`.
+Resolve CLI path: find this skill's own SKILL.md via Glob (`**/omni-sw-apply-progressive-disclosure/SKILL.md`), then the CLI is at `../omni-sw-shared/scripts/agency_cli.py` relative to the skill directory. Store result as `{CLI}`.
 
 ## Target Detection
 
@@ -95,7 +95,6 @@ After CLI handles the mechanical extraction, apply these judgment-based steps ma
 4. **Priority 5 — Deduplicate:** Use `python {CLI} tokens deduplicate --root <path>` to find duplicates, then resolve manually.
 
 After applying changes:
-
 ```bash
 # Generate before/after comparison report
 python {CLI} tokens report --before <before-analysis.json> --after <after-analysis.json> --output <root>/docs/CONTEXT_REPORT.md
@@ -104,7 +103,6 @@ python {CLI} tokens report --before <before-analysis.json> --after <after-analys
 Present token savings summary to the user.
 
 **Constraints (both modes):**
-
 - Never delete original content — only move it
 - Preserve Claude Code precedence hierarchy (org > project > subdir > local)
 - Do not fragment security rules, environment config, or essential build commands

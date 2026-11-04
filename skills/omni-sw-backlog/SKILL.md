@@ -31,20 +31,14 @@ graph LR
 
 ## Script Resolution
 
-The script `backlog_manager.py` is bundled with this skill. Resolve it **once per session** in this order (first match wins):
-
-1. `~/.pi/agent/omni-sw.json` → `backlog_script` (written by the `pi-omni-sw` extension).
-2. Glob `**/omni-sw-backlog/scripts/backlog_manager.py` (standalone install).
+The script `backlog_manager.py` is bundled with this skill but its absolute path varies depending on installation method (Claude Code plugin cache or the pi skills directory). Resolve it **once per session** (e.g. via Glob on `**/omni-sw-backlog/scripts/backlog_manager.py`), then reuse the result:
 
 ```bash
-SCRIPT=""
-if [ -f "$HOME/.pi/agent/omni-sw.json" ]; then
-  SCRIPT=$(python -c "import json,os;print(json.load(open(os.path.expanduser('~/.pi/agent/omni-sw.json')))['backlog_script'])" 2>/dev/null)
-fi
-ls "$SCRIPT"
+# Run once at session start via Glob tool:
+Glob pattern: "**/backlog/scripts/backlog_manager.py"
 ```
 
-Store the result as `{SCRIPT}` for all subsequent commands.
+Store the result as `{SCRIPT}` for all subsequent commands. This costs one Glob call and avoids hardcoded paths.
 
 ## Permissions
 

@@ -14,7 +14,8 @@ Plan → Design & Contracts → Validate → Specify (RED) → Implement (GREEN)
 - **TDD / ATDD, not test-after.** A dedicated **Specify (RED)** phase authors the failing suite; a strict RED gate proves it compiles and fails for the right reason *before* any code exists.
 - **Clear test ownership.** QA owns the business-rule suite. Dev makes it green and may add complementary tests, but **never** edits, deletes or weakens a QA test. Disputes go through a `[TEST-REVIEW]` handshake where Dev waits for QA's ruling.
 - **Deterministic core.** Phase sequencing, gates, backlog transitions, state and metrics run through a CLI instead of prompting the model — fewer tokens, fewer mistakes.
-- **Bring your own models.** Abstract tiers (`opus`/`sonnet`/`haiku`) map to any pi model id, or inherit the session model by default.
+- **Bring your own models.** Per-agent model config in `skills/omni-sw-shared/models.json` keyed by `<phase>:<role>` — any pi model id of any provider, with a `:thinking` suffix for effort control; absent keys inherit the session model.
+- **Git worktree isolation.** Parallel implementations never share a working tree: instance isolation gives each run a dedicated `agency/*` branch + worktree ending in a PR, and parallel feature lanes run in managed worktrees (`pi-subagents/*` branches) with lane-scoped commits, per-lane review/verify, and sequential approved merges via the `worktree` CLI.
 
 ## Requirements
 

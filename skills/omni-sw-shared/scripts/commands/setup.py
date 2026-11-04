@@ -21,8 +21,9 @@ import argparse
 import json
 import os
 import textwrap
+from typing import Any
 
-from init_cmd import find_claude_md, find_backlog_script, derive_team_name, install_hooks, _claude_hooks_enabled
+from init_cmd import find_claude_md, find_backlog_script, derive_team_name, install_hooks
 
 
 def create_claude_md(project_root: str, name: str, stack: str, project_type: str,
@@ -165,7 +166,7 @@ def handle_setup(args: list[str]) -> dict:
     if opts.verify:
         return verify_setup(scan_root)
 
-    result = {"steps": []}
+    result: dict[str, Any] = {"steps": []}
     include_tests = not opts.no_tests
 
     # Step 1: CLAUDE.md
@@ -209,8 +210,8 @@ def handle_setup(args: list[str]) -> dict:
         "agency_dir": agency_dir,
     })
 
-    # Step 3: Hooks (Claude Code compatibility, opt-in)
-    if not opts.no_hooks and _claude_hooks_enabled():
+    # Step 3: Hooks
+    if not opts.no_hooks:
         try:
             hooks_result = install_hooks(project_root)
             result["steps"].append({
@@ -224,11 +225,7 @@ def handle_setup(args: list[str]) -> dict:
                 "error": str(e),
             })
     else:
-        result["steps"].append({
-            "step": "hooks",
-            "action": "skipped",
-            "reason": "Claude Code hooks are opt-in; set OMNI_SW_CLAUDE_HOOKS=1 to install them",
-        })
+        result["steps"].append({"step": "hooks", "action": "skipped"})
 
     # Summary
     script_path = find_backlog_script(scan_root)

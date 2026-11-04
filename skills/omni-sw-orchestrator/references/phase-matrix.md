@@ -13,61 +13,57 @@ Tests are authored **before** implementation: QA derives the suite from the acce
 
 ## Phase → Agent Mapping
 
-| # | Phase | Lead Agent | Lead Tier | Registered Agent | Skill Command | Assists | Output Artifacts |
+| # | Phase | Lead Agent | Model Config | Registered Agent | Skill Command | Assists | Output Artifacts |
 | --- | ------- | ----------- | ----------- | ------------------ | --------------- | --------- | ------------------ |
-| 1 | Plan | PM → PO | opus / sonnet | `omni-sw-pm`, `omni-sw-po` | `/skill:omni-sw-pm plan`, `/skill:omni-sw-po plan` | TL/Dev/QA (haiku) | `{DOCS_PATH}/PROJECT_BRIEF.md`, backlog |
-| 2 | Design & Contracts | TL | opus | `omni-sw-tl` | `/skill:omni-sw-tl design` | Dev/QA (haiku) | `{DOCS_PATH}/ARCHITECTURE.md`, `{DOCS_PATH}/CONTRACTS.md` |
-| 3 | Validate | PM + TL | opus | `omni-sw-pm`, `omni-sw-tl` | `/skill:omni-sw-pm validate`, `/skill:omni-sw-tl validate` | PO (haiku) | `{DOCS_PATH}/VALIDATION.md` |
-| 4 | Specify (RED) | QA | sonnet | `omni-sw-qa` | `/skill:omni-sw-qa specify` | TL (haiku) | `{DOCS_PATH}/TEST_SPEC.md`, failing tests in `tests/` |
-| 5 | Implement (GREEN) | Dev | sonnet | `omni-sw-dev` | `/skill:omni-sw-dev implement` | TL (sonnet) | Source code in `src/` + complementary tests |
-| 6 | Review | TL | sonnet | `omni-sw-tl` | `/skill:omni-sw-tl review` | QA (haiku) | `{DOCS_PATH}/REVIEW.md` |
-| 7 | Verify | QA | sonnet | `omni-sw-qa` | `/skill:omni-sw-qa test` | TL (haiku) | `{DOCS_PATH}/TEST_REPORT.md`, coverage |
-| 8 | Document | PM + TL | sonnet | `omni-sw-pm`, `omni-sw-tl` | `/skill:omni-sw-pm document`, `/skill:omni-sw-tl document` | PO/Dev/QA (haiku) | `README.md`, `CHANGELOG.md`, `{DOCS_PATH}/API_REFERENCE.md` |
+| 1 | Plan | PM → PO | models.json | `omni-sw-pm`, `omni-sw-po` | `/skill:omni-sw-pm plan`, `/skill:omni-sw-po plan` | TL/Dev/QA | `{DOCS_PATH}/PROJECT_BRIEF.md`, backlog |
+| 2 | Design & Contracts | TL | models.json | `omni-sw-tl` | `/skill:omni-sw-tl design` | Dev/QA | `{DOCS_PATH}/ARCHITECTURE.md`, `{DOCS_PATH}/CONTRACTS.md` |
+| 3 | Validate | PM + TL | models.json | `omni-sw-pm`, `omni-sw-tl` | `/skill:omni-sw-pm validate`, `/skill:omni-sw-tl validate` | PO | `{DOCS_PATH}/VALIDATION.md` |
+| 4 | Specify (RED) | QA | models.json | `omni-sw-qa` | `/skill:omni-sw-qa specify` | TL | `{DOCS_PATH}/TEST_SPEC.md`, failing tests in `tests/` |
+| 5 | Implement (GREEN) | Dev | models.json | `omni-sw-dev` | `/skill:omni-sw-dev implement` | TL | Source code in `src/` + complementary tests |
+| 6 | Review | TL | models.json | `omni-sw-tl` | `/skill:omni-sw-tl review` | QA | `{DOCS_PATH}/REVIEW.md` |
+| 7 | Verify | QA | models.json | `omni-sw-qa` | `/skill:omni-sw-qa test` | TL | `{DOCS_PATH}/TEST_REPORT.md`, coverage |
+| 8 | Document | PM + TL | models.json | `omni-sw-pm`, `omni-sw-tl` | `/skill:omni-sw-pm document`, `/skill:omni-sw-tl document` | PO/Dev/QA | `README.md`, `CHANGELOG.md`, `{DOCS_PATH}/API_REFERENCE.md` |
 
 ## Model Routing
 
-Each agent is spawned with a `model` override only when the abstract tier maps to a concrete pi model id in `omni-sw-shared/models.json`. When a tier is `null`/unmapped, **omit the `model` parameter** and the agent inherits the session/default model.
+Each agent's model comes from `"<phase>:<role>"` in `omni-sw-shared/models.json`. When the value is `null`/absent, **omit the `model` parameter** and the agent inherits the session/default model. Values are provider-agnostic pi model ids, optionally with a `:thinking` suffix.
 
-`models.json` (editable): maps `opus`, `sonnet`, `haiku` to `provider/model[:thinking]`. Default ships all three as `null` so the agency runs immediately on whatever default model is configured.
+`models.json` (editable): maps each agent by `"<phase>:<role>"` (e.g. `"design:tl": "openai/gpt-5.2:high"`, `"qa": ...` is NOT valid — keys are always `<phase>:<role>`) to a concrete `provider/model[:thinking]` id — any provider. The `:thinking` suffix sets pi's thinking level (`:off`..`:max`). `null` or absent key = inherit the session/default model, so the agency runs immediately on whatever default is configured. Provider-agnostic: no vendor or tier naming is assumed anywhere.
 
 ### Model Selection Principles
 
-| Tier | Intended use |
-| ------ | -------------- |
-| opus | Judgment: architecture, contracts, requirement elicitation, gate verdicts |
-| sonnet | Generation: code, stories, reviews, tests, documentation |
-| haiku | Lightweight: optional assists, notes, alignment checks |
+There are no abstract tiers. Model choice is per `"<phase>:<role>"` in `models.json`: leads that require heavy judgment (architecture, contracts, gate verdicts) typically get a stronger model than lightweight assists (notes, alignment checks), but any model from any provider can be assigned to any agent.
 
 ### Full Agent Matrix
 
 `name` is the phase-scoped task label (used for `todo`); `agent` is the registered pi-subagents agent id passed to `subagent`.
 
-| Phase | Name | Agent | Tier | Role |
+| Phase | Name | Agent | Role |
 | ------- | ------ | ------- | ------ | ------ |
-| Plan | `pm-plan` | `omni-sw-pm` | opus | Lead: PROJECT_BRIEF.md |
-| Plan | `po-plan` | `omni-sw-po` | sonnet | Lead: backlog from brief |
-| Plan | `tl-plan-assist` | `omni-sw-tl` | haiku | Assist: risk notes |
-| Plan | `dev-plan-assist` | `omni-sw-dev` | haiku | Assist: implementability notes |
-| Plan | `qa-plan-assist` | `omni-sw-qa` | haiku | Assist: testability notes |
-| Design | `tl-design` | `omni-sw-tl` | opus | Lead: ARCHITECTURE.md + CONTRACTS.md |
-| Design | `dev-design-assist` | `omni-sw-dev` | haiku | Assist: implementability review |
-| Design | `qa-design-assist` | `omni-sw-qa` | haiku | Assist: contract/testability review |
-| Validate | `pm-validate` | `omni-sw-pm` | opus | Lead: business validation |
-| Validate | `tl-validate` | `omni-sw-tl` | opus | Lead: technical + contract validation |
-| Validate | `po-validate-assist` | `omni-sw-po` | haiku | Assist: backlog alignment |
-| Specify | `qa-specify` | `omni-sw-qa` | sonnet | Lead: author failing business-rule suite (RED) |
-| Specify | `tl-specify-assist` | `omni-sw-tl` | haiku | Assist: contract coverage review |
-| Implement | `dev-implement` | `omni-sw-dev` | sonnet | Lead: make the frozen suite green |
-| Implement | `tl-implement-assist` | `omni-sw-tl` | sonnet | Assist: on-demand technical guidance |
-| Review | `tl-review` | `omni-sw-tl` | sonnet | Lead: code review, REVIEW.md |
-| Review | `qa-review-assist` | `omni-sw-qa` | haiku | Assist: correctness review |
-| Verify | `qa-test` | `omni-sw-qa` | sonnet | Lead: run frozen suite, coverage, TEST_REPORT.md |
-| Verify | `tl-test-assist` | `omni-sw-tl` | haiku | Assist: coverage review |
-| Document | `pm-document` | `omni-sw-pm` | sonnet | Lead: README.md, CHANGELOG.md |
-| Document | `tl-document` | `omni-sw-tl` | sonnet | Lead: API_REFERENCE.md, ARCHITECTURE.md |
-| Document | `po-document-assist` | `omni-sw-po` | haiku | Assist: documentation verification |
-| Document | `dev-document-assist` | `omni-sw-dev` | haiku | Assist: developer documentation |
-| Document | `qa-document-assist` | `omni-sw-qa` | haiku | Assist: test documentation |
+| Plan | `pm-plan` | `omni-sw-pm` |  Lead: PROJECT_BRIEF.md |
+| Plan | `po-plan` | `omni-sw-po` |  Lead: backlog from brief |
+| Plan | `tl-plan-assist` | `omni-sw-tl` |  Assist: risk notes |
+| Plan | `dev-plan-assist` | `omni-sw-dev` |  Assist: implementability notes |
+| Plan | `qa-plan-assist` | `omni-sw-qa` |  Assist: testability notes |
+| Design | `tl-design` | `omni-sw-tl` |  Lead: ARCHITECTURE.md + CONTRACTS.md |
+| Design | `dev-design-assist` | `omni-sw-dev` |  Assist: implementability review |
+| Design | `qa-design-assist` | `omni-sw-qa` |  Assist: contract/testability review |
+| Validate | `pm-validate` | `omni-sw-pm` |  Lead: business validation |
+| Validate | `tl-validate` | `omni-sw-tl` |  Lead: technical + contract validation |
+| Validate | `po-validate-assist` | `omni-sw-po` |  Assist: backlog alignment |
+| Specify | `qa-specify` | `omni-sw-qa` |  Lead: author failing business-rule suite (RED) |
+| Specify | `tl-specify-assist` | `omni-sw-tl` |  Assist: contract coverage review |
+| Implement | `dev-implement` | `omni-sw-dev` |  Lead: make the frozen suite green |
+| Implement | `tl-implement-assist` | `omni-sw-tl` |  Assist: on-demand technical guidance |
+| Review | `tl-review` | `omni-sw-tl` |  Lead: code review, REVIEW.md |
+| Review | `qa-review-assist` | `omni-sw-qa` |  Assist: correctness review |
+| Verify | `qa-test` | `omni-sw-qa` |  Lead: run frozen suite, coverage, TEST_REPORT.md |
+| Verify | `tl-test-assist` | `omni-sw-tl` |  Assist: coverage review |
+| Document | `pm-document` | `omni-sw-pm` |  Lead: README.md, CHANGELOG.md |
+| Document | `tl-document` | `omni-sw-tl` |  Lead: API_REFERENCE.md, ARCHITECTURE.md |
+| Document | `po-document-assist` | `omni-sw-po` |  Assist: documentation verification |
+| Document | `dev-document-assist` | `omni-sw-dev` |  Assist: developer documentation |
+| Document | `qa-document-assist` | `omni-sw-qa` |  Assist: test documentation |
 
 **Summary:** 11 lead spawns, 13 assist spawns.
 
@@ -79,11 +75,14 @@ Registered agent (spawn): `omni-sw-{role}`.
 ### Phase Lifecycle
 
 1. Loop over the `waves` array returned by `phase prepare`.
-2. Spawn every agent in a wave in parallel: `subagent({ agent: <agent.agent>, task: <agent.prompt>, ...(agent.model ? { model: agent.model } : {}) })`.
-3. Adopt `<agent.name>` as the `todo` owner for that task.
-4. Monitor via `todo`; handle `[QUESTIONS]` via `ask_user_question`.
-5. Wait for wave N before spawning wave N+1.
-6. Proceed to the next phase.
+2. Activate every agent in a wave in parallel, branching on `<agent.activation>`:
+   - `spawn` → `subagent({ agent: <agent.agent>, task: <agent.prompt>, ...(agent.model ? { model: agent.model } : {}) })`
+   - `resume` → `subagent({ action: "resume", id: <agent.resume_from_run_id>, message: <agent.prompt> })`
+3. Persist the run id returned by that call: `state agent-session --key {phase}:{role} --run-id <run_id> --iteration <agent.iteration>`.
+4. Adopt `<agent.name>` as the `todo` owner for that task.
+5. Monitor via `todo`; handle `[QUESTIONS]` via `ask_user_question`.
+6. Wait for wave N before spawning wave N+1.
+7. Proceed to the next phase.
 
 ## Gate Conditions
 
@@ -125,7 +124,7 @@ The technical verdict must also confirm `CONTRACTS.md` is complete enough for QA
 During Implement, Dev works only until the frozen suite is green. If Dev believes a QA-authored test is wrong:
 
 1. Dev sends `[TEST-REVIEW]` with the test id, the reason, and a proposed correction, then **stops and waits**.
-2. The orchestrator relays the request to a QA agent (spawn `qa-test-review` on demand if no QA agent is live) and waits for the ruling.
+2. The orchestrator relays the request to a QA agent. **Prefer resuming the recorded QA session** (the one that authored the suite, from `specify:qa` in the activation journal) over spawning a new one — it already knows why each test exists. Spawn a fresh `qa-test-review` only when no run id is recorded or the resume fails.
 3. QA either fixes the test itself or rejects with an explanation.
 4. The orchestrator relays the ruling back to Dev and resumes it.
 
@@ -133,7 +132,11 @@ Only QA may edit QA-authored tests. Dev may add distinctly named complementary t
 
 ## Feedback Loop Limits
 
-Maximum **3 iterations per gate** before escalating to the user with a full issue summary. On gate failure: increment the loop counter, shut down the current phase agents, and spawn fresh agents for the target phase.
+Maximum **3 iterations per gate** before escalating to the user with a full issue summary.
+
+On gate failure: increment the loop counter, record the verdict, then **re-enter the target phase and continue the same sessions** — call `phase prepare` for the target phase and honor the returned `activation` (see *Loop-back Activation* in the orchestrator SKILL.md). Do NOT shut the phase agents down and do NOT spawn fresh agents: re-instantiating a role throws away its context and makes it re-read its role skill, `CLAUDE.md` and every artifact, which is the dominant cost of a loop.
+
+Use `phase prepare --fresh` only when an unanchored verdict is genuinely required (loop stuck at the iteration limit, or the role is defending the artifact it produced). Resume preserves the session's model, so a loop-back must stay within the same phase — the model for a `{phase, role}` pair never changes, and cross-phase reuse is not automated.
 
 ## Sequential Dependencies Within Phases
 
@@ -163,7 +166,7 @@ When the backlog has multiple independent feature areas, the orchestrator may pa
 | Review | auth | `tl-review-auth` | `omni-sw-tl` |
 | Verify | auth | `qa-test-auth` | `omni-sw-qa` |
 
-Model tiers follow the full matrix. The Implement ⇄ QA handshake applies per feature.
+Per-agent models follow the full matrix and `models.json`. The Implement ⇄ QA handshake applies per feature.
 
 ### Incremental Flow
 

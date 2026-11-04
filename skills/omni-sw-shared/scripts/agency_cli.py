@@ -21,6 +21,7 @@ Commands:
     state       Persistent state machine (init, update, gate-record, query, can-proceed, summary)
     decision    Decision Log system (add, list, get, summary)
     pipeline    Feature-based parallel execution pipelines (group, agents, status, ready-for)
+    worktree    Instance isolation and lane merge management (init, status, merge, pr, remove)
     metrics     Workflow observability (dashboard, stories, phase, export)
     notify      Windows toast notifications (send, phase-complete, sdlc-complete, input-needed)
     setup       Full project setup (CLAUDE.md, directories, hooks) — one-shot configuration
@@ -54,6 +55,7 @@ from commands.pipeline import handle_pipeline
 from commands.metrics import handle_metrics
 from commands.notify import handle_notify
 from commands.setup import handle_setup
+from commands.worktree import handle_worktree
 
 COMMANDS = {
     "init": handle_init,
@@ -69,6 +71,7 @@ COMMANDS = {
     "state": handle_state,
     "decision": handle_decision,
     "pipeline": handle_pipeline,
+    "worktree": handle_worktree,
     "metrics": handle_metrics,
     "notify": handle_notify,
 }

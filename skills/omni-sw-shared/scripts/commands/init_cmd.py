@@ -6,7 +6,7 @@ Usage:
     agency_cli init --scan-root <path> --create-dirs
 
 Resolves PROJECT_ROOT, SCRIPT_PATH, BACKLOG_PATH, TEAM_NAME deterministically.
-Claude Code notification hooks are OPT-IN for pi installs (set OMNI_SW_CLAUDE_HOOKS=1).
+Also installs Claude Code hooks for automatic notifications.
 """
 
 import argparse
@@ -16,8 +16,10 @@ import json
 import copy
 import sys
 
+from hygiene import ensure_hygiene_config
 
-def _fwd(p: str) -> str:
+
+def _fwd(p: str | None) -> str | None:
     """Normalize path to forward slashes for bash on Windows."""
     return p.replace("\\", "/") if p else p
 
@@ -80,11 +82,6 @@ def get_plugin_root() -> str:
     return os.path.normpath(
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
     )
-
-
-def _claude_hooks_enabled() -> bool:
-    """Claude Code notification hooks are opt-in (pi does not use them)."""
-    return os.environ.get("OMNI_SW_CLAUDE_HOOKS", "").strip().lower() in ("1", "true", "yes")
 
 
 def install_hooks(project_root: str) -> dict:
@@ -204,17 +201,17 @@ def handle_init(args: list[str]) -> dict:
     if script_path is None:
         result["warning"] = "backlog_manager.py not found. Backlog operations will fail."
 
-    # Auto-install notification hooks (Claude Code compatibility, opt-in)
-    if not opts.no_hooks and _claude_hooks_enabled():
+    # Per-project hygiene policy: create the default RESTRICTIVE config when
+    # missing (existing file is never overwritten).
+    if opts.create_dirs:
+        result["hygiene_policy"] = ensure_hygiene_config(project_root)
+
+    # Auto-install notification hooks
+    if not opts.no_hooks:
         try:
             hooks_result = install_hooks(project_root)
             result["hooks"] = hooks_result
         except Exception as e:
             result["hooks"] = {"action": "error", "error": str(e)}
-    else:
-        result["hooks"] = {
-            "action": "skipped",
-            "reason": "Claude Code hooks are opt-in; set OMNI_SW_CLAUDE_HOOKS=1 to install them",
-        }
 
     return result

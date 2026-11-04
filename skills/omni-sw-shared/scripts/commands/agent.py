@@ -46,156 +46,133 @@ def validate_phase(phase: str) -> str:
     return phase
 
 
-# Full agent matrix: (phase, role) -> {model, type, description}
+# Full agent matrix: (phase, role) -> {type, description}.
+# Per-agent models come from models.json, keyed by "<phase>:<role>".
 AGENT_MATRIX = {
     # Plan
     ("plan", "pm"): {
-        "model": "opus",
         "type": "lead",
         "desc": "Lead: produce PROJECT_BRIEF.md",
         "skill": "/pm plan",
     },
     ("plan", "po"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: create backlog from brief",
         "skill": "/po plan",
     },
     ("plan", "tl"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: risk notes",
         "skill": "/tl plan",
     },
     ("plan", "dev"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: implementability notes",
         "skill": "/dev plan",
     },
     ("plan", "qa"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: testability notes",
         "skill": "/qa plan",
     },
     # Design
     ("design", "tl"): {
-        "model": "opus",
         "type": "lead",
         "desc": "Lead: produce ARCHITECTURE.md",
         "skill": "/tl design",
     },
     ("design", "dev"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: implementability review",
         "skill": "/dev design",
     },
     ("design", "qa"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: testability review",
         "skill": "/qa design",
     },
     # Validate
     ("validate", "pm"): {
-        "model": "opus",
         "type": "lead",
         "desc": "Lead: business validation",
         "skill": "/pm validate",
     },
     ("validate", "tl"): {
-        "model": "opus",
         "type": "lead",
         "desc": "Lead: technical validation",
         "skill": "/tl validate",
     },
     ("validate", "po"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: backlog alignment check",
         "skill": "/po validate",
     },
     # Specify (RED) -- QA authors the business-rule test suite from contracts
     ("specify", "qa"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: author failing business-rule tests (RED)",
         "skill": "/qa specify",
     },
     ("specify", "tl"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: contract coverage review",
         "skill": "/tl specify",
     },
     # Implement (GREEN)
     ("implement", "dev"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: write production code",
         "skill": "/dev implement",
     },
     ("implement", "tl"): {
-        "model": "sonnet",
         "type": "assist",
         "desc": "Assist: on-demand tech guidance",
         "skill": "/tl implement",
     },
     # Review
     ("review", "tl"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: code review, produce REVIEW.md",
         "skill": "/tl review",
     },
     ("review", "qa"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: correctness review",
         "skill": "/qa review",
     },
     # Test
     ("test", "qa"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: verify frozen suite, TEST_REPORT.md",
         "skill": "/qa test",
     },
     ("test", "tl"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: coverage review",
         "skill": "/tl test",
     },
     # Document
     ("document", "pm"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: README.md, CHANGELOG.md",
         "skill": "/pm document",
     },
     ("document", "tl"): {
-        "model": "sonnet",
         "type": "lead",
         "desc": "Lead: API_REFERENCE.md, ARCHITECTURE.md",
         "skill": "/tl document",
     },
     ("document", "po"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: documentation verification",
         "skill": "/po document",
     },
     ("document", "dev"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: developer documentation",
         "skill": "/dev document",
     },
     ("document", "qa"): {
-        "model": "haiku",
         "type": "assist",
         "desc": "Assist: test documentation",
         "skill": "/qa document",
@@ -208,25 +185,30 @@ def skill_command(role: str, phase: str) -> str:
     return f"/skill:omni-sw-{role} {phase}"
 
 
-# Optional tier -> concrete pi model id mapping, shared by all agency skills.
+# Per-agent model config, shared by all agency skills: "<phase>:<role>" ->
+# concrete pi model id (any provider) or null/absent to inherit the session model.
 _MODELS_PATH = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "models.json")
 )
 
 
-def resolve_model(tier: str) -> str | None:
-    """Resolve an abstract tier (opus/sonnet/haiku) to a pi model id.
+def resolve_model(phase: str, role: str) -> str | None:
+    """Resolve the configured model for a (phase, role) pair from models.json.
 
-    Returns None when the tier is unmapped, meaning the spawn should omit the
-    model override and inherit the session/default model.
+    Keyed by "<phase>:<role>" (e.g. "design:tl"). Values are concrete pi model
+    ids of ANY provider, optionally with a `:thinking` suffix (off..max), e.g.
+    "openai/gpt-5.2:high", "zai/glm-5.3:medium". Provider-agnostic: no vendor
+    or tier naming is assumed anywhere in the extension.
+    Returns None when the key is absent or null: the spawn omits the model
+    override and inherits the session/default model.
     """
     try:
         with open(_MODELS_PATH, encoding="utf-8") as f:
             mapping = json.load(f)
     except (OSError, ValueError):
         return None
-    value = mapping.get(tier)
-    return value if isinstance(value, str) and value.strip() else None
+    value = mapping.get(f"{phase}:{role}")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 # Normalize the legacy `skill` fields so no caller can read a stale command.
@@ -254,6 +236,35 @@ GATE_SUFFIXES = {
     "test": "End output with [GATE:PASS], [GATE:FAIL_BUG], or [GATE:FAIL_TEST].",
 }
 
+# Guidance injected when resuming a child session after a gate loop-back. The child
+# already has its role skill, CLAUDE.md and the phase artifacts in context, so the
+# continuation prompt only carries what changed: the verdict and the focus.
+LOOP_BACK_HINTS = {
+    "validate": (
+        "Address only the reproved items recorded in VALIDATION.md. Do not rewrite "
+        "sections that were already approved."
+    ),
+    "specify": (
+        "Re-open TEST_SPEC.md and the frozen suite and fix ONLY the flagged items: "
+        "missing tests for Must ACs or contracts, tests that pass, infrastructure "
+        "errors, or contract gaps. Do not rewrite the whole suite and never touch src/."
+    ),
+    "review": "Address only the blocking issues listed in REVIEW.md.",
+    "test": "Address only the failing checks recorded in TEST_REPORT.md.",
+}
+
+# Same idea for assist agents: they must not redo the whole review, only the delta.
+LOOP_BACK_ASSIST_HINTS = {
+    "validate": "Re-check only the items the PM reproved and update your [NOTES].",
+    "specify": "Re-check only what changed in TEST_SPEC.md and the suite against CONTRACTS.md. Do not re-review unchanged contracts.",
+    "review": "Re-check only the blocking issues and the areas the previous review touched.",
+    "test": "Re-check only the failing checks and the areas changed since your previous review.",
+}
+LOOP_BACK_ASSIST_DEFAULT = (
+    "Re-check only what changed since your previous review and report the delta as [NOTES]. "
+    "Do not repeat findings you already reported."
+)
+
 
 def get_agent_name(role: str, phase: str, agent_type: str) -> str:
     """Generate deterministic agent name."""
@@ -264,14 +275,14 @@ def get_agent_name(role: str, phase: str, agent_type: str) -> str:
     return f"{role}-{phase}"
 
 
-def get_model(role: str, phase: str) -> str:
-    """Lookup model for role/phase from matrix."""
+def get_model(role: str, phase: str) -> str | None:
+    """Resolve the configured model for role/phase (None = inherit session model)."""
     role = validate_role(role)
     phase = validate_phase(phase)
     key = (phase, role)
     if key not in AGENT_MATRIX:
         raise ValueError(f"No agent defined for role={role}, phase={phase}")
-    return AGENT_MATRIX[key]["model"]
+    return resolve_model(phase, role)
 
 
 def list_agents(phase: str, skip_assists: bool = False) -> list[dict]:
@@ -292,8 +303,7 @@ def list_agents(phase: str, skip_assists: bool = False) -> list[dict]:
                     "role": role,
                     "name": get_agent_name(role, phase, info["type"]),
                     "agent": f"omni-sw-{role}",
-                    "model": resolve_model(info["model"]),
-                    "model_tier": info["model"],
+                    "model": resolve_model(phase, role),
                     "type": info["type"],
                     "description": info["desc"],
                     "skill_command": skill_command(role, phase),
@@ -322,10 +332,18 @@ def generate_prompt(
     cli_path: str | None = None,
     state_path: str | None = None,
     docs_path: str | None = None,
+    iteration: int = 1,
+    prior_verdict: str | None = None,
+    resumed: bool = False,
 ) -> str:
     """Generate the full agent spawn prompt.
 
     All paths are normalized to forward slashes for bash compatibility on Windows.
+
+    When `resumed` is True the child session already holds its role skill, CLAUDE.md
+    and the phase artifacts, so a short continuation prompt is emitted instead of the
+    full onboarding prompt. This is what makes a gate loop-back continue the same
+    session rather than re-instantiating the agent from zero.
     """
     role = validate_role(role)
     phase = validate_phase(phase)
@@ -379,6 +397,40 @@ def generate_prompt(
         env_lines.append(f"SKILL_PATH={skill_path}")
     env_block = " | ".join(env_lines)
 
+    if resumed:
+        verdict = (
+            prior_verdict
+            if prior_verdict
+            else "unknown -- read the phase artifact for the flagged items"
+        )
+        parts = [
+            f"CONTINUATION -- you are the same {role.upper()} session, iteration {iteration} of phase {phase}.",
+            f"Do NOT re-read your role skill at {skill_path} or CLAUDE.md at {project_root}/CLAUDE.md; "
+            f"you already have them in context.",
+            f"Previous gate verdict: {verdict}.",
+        ]
+        if atype == "lead":
+            focus = LOOP_BACK_HINTS.get(
+                phase, "Address only the items flagged by the previous gate."
+            )
+            parts.append(f"Focus: {focus}")
+            gate_suffix = GATE_SUFFIXES.get(phase.lower())
+            if gate_suffix:
+                parts.append(gate_suffix)
+        else:
+            focus = LOOP_BACK_ASSIST_HINTS.get(phase, LOOP_BACK_ASSIST_DEFAULT)
+            parts.append(f"Focus: {focus}")
+            parts.append("Provide your [NOTES] and review findings for the delta only.")
+        parts.append(
+            f"Resolved paths (unchanged, use directly, do NOT re-resolve via Glob): {env_block}."
+        )
+        parts.append(
+            "If you need clarification, list all questions prefixed with [QUESTIONS]. "
+            "Do NOT call the ask_user_question tool -- return questions to me prefixed with [QUESTIONS]."
+        )
+        parts.append("When done, mark your task as completed with the `todo` tool.")
+        return " ".join(parts)
+
     if atype == "lead":
         prompt = (
             f"You are the {role.upper()}. Read and follow your role skill at {skill_path} (slash command: {skill_cmd}). "
@@ -431,7 +483,7 @@ def get_order(phase: str, skip_assists: bool = False) -> list[dict]:
                     {
                         "role": role,
                         "name": get_agent_name(role, phase, info["type"]),
-                        "model": info["model"],
+                        "model": resolve_model(phase, role),
                         "type": info["type"],
                     }
                 )

@@ -97,9 +97,32 @@ def _validate_status(status: str) -> str:
 def _validate_verdict(verdict: str) -> str:
     """Validate and normalize verdict."""
     verdict = verdict.upper().strip()
-    if verdict not in ("APPROVED", "REPROVED", "PASS", "FAIL", "FAIL_BUG", "FAIL_TEST"):
+    if verdict not in (
+        "APPROVED",
+        "REPROVED",
+        "PASS",
+        "FAIL",
+        "FAIL_BUG",
+        "FAIL_TEST",
+        "RED_PASS",
+        "RED_FAIL_TESTS",
+        "RED_FAIL_CONTRACT",
+    ):
         raise ValueError(f"Invalid verdict: {verdict}")
     return verdict
+
+
+def _validate_session_key(key: str) -> str:
+    """Validate and normalize an agent session key in `{phase}:{role}` form."""
+    raw = (key or "").strip().lower()
+    if ":" not in raw:
+        raise ValueError(
+            f"Session key must be '<phase>:<role>' (e.g. specify:qa). Got: {key}"
+        )
+    phase, role = (part.strip() for part in raw.split(":", 1))
+    if not phase or not role:
+        raise ValueError(f"Invalid session key: {key}")
+    return f"{phase}:{role}"
 
 
 def _fwd(p: str) -> str:
@@ -126,7 +149,7 @@ def create_docs_path(project_root: str, short_description: str) -> str:
     return docs_path
 
 
-def get_docs_path(state_path: str, project_root: str = None) -> str:
+def get_docs_path(state_path: str, project_root: str | None = None) -> str:
     """Read docs_path from STATE.json, falling back to {project_root}/docs/.
 
     If state doesn't exist or has no docs_path, returns the fallback.
@@ -144,9 +167,13 @@ def get_docs_path(state_path: str, project_root: str = None) -> str:
 
 
 def create_initial_state(
-    project_name: str, objective: str, docs_path: str = None
+    project_name: str, objective: str, docs_path: str | None = None
 ) -> dict:
-    """Create a new STATE.json structure."""
+    """Create a new STATE.json structure.
+
+    docs_path is the timestamped docs subfolder (None when --project-root was
+    omitted); it is stored as null in STATE.json in that case.
+    """
     now = _get_now_iso()
 
     phases = {}
@@ -158,6 +185,9 @@ def create_initial_state(
             "artifacts": [],
             "agents": {},
             "notes": "",
+            # Populated for every gate phase so the orchestrator can resume the
+            # same child session on loop-back instead of re-spawning from zero.
+            "gate": {"iterations": 0, "max_iterations": 3, "verdicts": []},
         }
 
     state = {
@@ -170,6 +200,9 @@ def create_initial_state(
         "current_phase": None,
         "status": "in_progress",
         "phases": phases,
+        # {phase}:{role} -> {run_id, agent, iteration, status, updated_at}
+        # Lets `phase prepare` emit activation=resume across context compaction.
+        "agent_sessions": {},
         "metrics": {
             "total_phases": len(PHASES),
             "completed_phases": 0,
@@ -355,6 +388,15 @@ def record_gate_verdict(args: list[str]) -> dict:
             else "REPROVED"
         )
 
+    elif phase == "specify":
+        # RED gate expects RED_PASS, RED_FAIL_TESTS, or RED_FAIL_CONTRACT
+        verdict = _validate_verdict(opts.verdict)
+        if verdict not in ("RED_PASS", "RED_FAIL_TESTS", "RED_FAIL_CONTRACT"):
+            raise ValueError(
+                "Specify gate expects RED_PASS, RED_FAIL_TESTS, or RED_FAIL_CONTRACT"
+            )
+        verdict_record["verdict"] = verdict
+
     elif phase == "review":
         # Review gate expects single PASS/FAIL verdict
         verdict = _validate_verdict(opts.verdict)
@@ -384,6 +426,95 @@ def record_gate_verdict(args: list[str]) -> dict:
         "iteration": iteration_num,
         "verdict_record": verdict_record,
     }
+
+
+def record_agent_session(args: list[str]) -> dict:
+    """Handle 'state agent-session' subcommand.
+
+    Persists the run id of the child session spawned for a {phase}:{role} pair so a
+    gate loop-back can `resume` that same session instead of spawning from zero.
+    """
+    parser = argparse.ArgumentParser(prog="agency_cli state agent-session")
+    parser.add_argument("--state-path", required=True, help="Path to STATE.json")
+    parser.add_argument(
+        "--key", required=True, help="Session key in '<phase>:<role>' form"
+    )
+    parser.add_argument("--run-id", help="pi-subagents run id returned by the spawn")
+    parser.add_argument("--agent", help="Registered agent id, e.g. omni-sw-qa")
+    parser.add_argument("--iteration", type=int, help="Phase iteration this session served")
+    parser.add_argument(
+        "--status",
+        default="completed",
+        help="running|completed|failed|stopped (default: completed)",
+    )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Drop the stored run id (use when resume is known to be impossible)",
+    )
+    opts = parser.parse_args(args)
+
+    state_path = os.path.abspath(opts.state_path)
+    state = _load_state(state_path)
+
+    key = _validate_session_key(opts.key)
+    sessions = state.setdefault("agent_sessions", {})
+
+    if opts.clear:
+        removed = sessions.pop(key, None)
+        _save_state(state_path, state)
+        return {"status": "cleared", "key": key, "removed": removed}
+
+    if not opts.run_id or not opts.run_id.strip():
+        raise ValueError("--run-id is required unless --clear is passed")
+
+    entry = {
+        "run_id": opts.run_id.strip(),
+        "status": opts.status.strip().lower(),
+        "updated_at": _get_now_iso(),
+    }
+    if opts.agent:
+        entry["agent"] = opts.agent.strip()
+    if opts.iteration is not None:
+        entry["iteration"] = opts.iteration
+    previous = sessions.get(key)
+    if previous and previous.get("run_id") and previous["run_id"] != entry["run_id"]:
+        entry["previous_run_id"] = previous["run_id"]
+
+    # `activations` is the phase loop counter read by `phase prepare`. It advances once
+    # per real activation: either the orchestrator passes the iteration returned by
+    # `phase prepare`, or the run id changed (spawn/resume produced a new child run).
+    previous_activations = int((previous or {}).get("activations") or 0)
+    if opts.iteration is not None:
+        entry["activations"] = max(previous_activations, int(opts.iteration))
+    elif previous is None or previous.get("run_id") != entry["run_id"]:
+        entry["activations"] = previous_activations + 1
+    else:
+        # Status-only update (marking the same run completed): not a new activation.
+        entry["activations"] = max(previous_activations, 1)
+    sessions[key] = entry
+
+    _save_state(state_path, state)
+
+    return {"status": "recorded", "key": key, "session": entry}
+
+
+def query_agent_sessions(args: list[str]) -> dict:
+    """Handle 'state agent-sessions' subcommand (read all recorded run ids)."""
+    parser = argparse.ArgumentParser(prog="agency_cli state agent-sessions")
+    parser.add_argument("--state-path", required=True, help="Path to STATE.json")
+    parser.add_argument("--phase", help="Filter to phases starting with this prefix")
+    opts = parser.parse_args(args)
+
+    state_path = os.path.abspath(opts.state_path)
+    state = _load_state(state_path)
+    sessions = state.get("agent_sessions", {}) or {}
+
+    if opts.phase:
+        prefix = f"{opts.phase.lower().strip()}:"
+        sessions = {k: v for k, v in sessions.items() if k.startswith(prefix)}
+
+    return {"agent_sessions": sessions, "total": len(sessions)}
 
 
 def query_state(args: list[str]) -> dict | str:
@@ -630,7 +761,7 @@ def checkpoint_state(args: list[str]) -> dict:
     for p in PHASES:
         if state["phases"][p]["status"] not in ("completed", "in_progress"):
             continue
-        from commands.phase import PHASE_INFO, resolve_artifact_path
+        from phase import PHASE_INFO, resolve_artifact_path
 
         if p in PHASE_INFO:
             for artifact in PHASE_INFO[p]["artifacts"]:
@@ -684,7 +815,8 @@ def handle_state(args: list[str]) -> dict | str:
     """Main handler for state subcommands."""
     if not args:
         raise ValueError(
-            "Subcommand required: init, update, gate-record, query, can-proceed, summary, checkpoint"
+            "Subcommand required: init, update, gate-record, agent-session, "
+            "agent-sessions, query, can-proceed, summary, checkpoint"
         )
 
     subcmd = args[0]
@@ -695,6 +827,10 @@ def handle_state(args: list[str]) -> dict | str:
         return update_phase_status(args[1:])
     elif subcmd == "gate-record":
         return record_gate_verdict(args[1:])
+    elif subcmd == "agent-session":
+        return record_agent_session(args[1:])
+    elif subcmd == "agent-sessions":
+        return query_agent_sessions(args[1:])
     elif subcmd == "query":
         return query_state(args[1:])
     elif subcmd == "can-proceed":
@@ -705,5 +841,6 @@ def handle_state(args: list[str]) -> dict | str:
         return checkpoint_state(args[1:])
     else:
         raise ValueError(
-            f"Unknown subcommand: {subcmd}. Valid: init, update, gate-record, query, can-proceed, summary, checkpoint"
+            f"Unknown subcommand: {subcmd}. Valid: init, update, gate-record, "
+            f"agent-session, agent-sessions, query, can-proceed, summary, checkpoint"
         )
